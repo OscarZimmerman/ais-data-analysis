@@ -46,8 +46,6 @@ def ais_gap_analysis(df):
 
 
 
-import numpy as np
-import pandas as pd
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -61,8 +59,7 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 
-import numpy as np
-import pandas as pd
+
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371  # Earth radius in km
@@ -84,38 +81,26 @@ def detect_sts_events(df, distance_km=0.5):
     print("Total AIS points:", len(df))
     print("Unique vessels:", df["MMSI"].nunique())
 
-    # ----------------------------------
-    # Filter low-speed vessels
-    # ----------------------------------
     print("\nFiltering low-speed AIS points (SOG < 2 knots)")
     sts_candidates = df[df["SOG"] < 2].copy()
 
     print("Candidate AIS points:", len(sts_candidates))
 
-    # ----------------------------------
-    # Time bins
-    # ----------------------------------
+
     sts_candidates["time_bin"] = sts_candidates["timestamp"].dt.floor("30min")
 
-    # ----------------------------------
-    # Spatial grid
-    # ----------------------------------
+
     GRID_SIZE = 0.05
     sts_candidates["lat_bin"] = (sts_candidates["LAT"] / GRID_SIZE).astype(int)
     sts_candidates["lon_bin"] = (sts_candidates["LON"] / GRID_SIZE).astype(int)
 
-    # ----------------------------------
-    # Grouping
-    # ----------------------------------
+
     groups = sts_candidates.groupby(["time_bin", "lat_bin", "lon_bin"])
 
     print("Total space-time groups:", len(groups))
 
     events = []
 
-    # ----------------------------------
-    # Iterate groups
-    # ----------------------------------
     for i, ((time_bin, lat_bin, lon_bin), subset) in enumerate(groups):
 
         if i % 500 == 0:
@@ -151,14 +136,8 @@ def detect_sts_events(df, distance_km=0.5):
     print("\nSTS scanning complete")
     print("Total candidate encounters:", len(events))
 
-    # ----------------------------------
-    # Output dataframe
-    # ----------------------------------
     sts_df = pd.DataFrame(events)
 
-    # ----------------------------------
-    # Aggregation
-    # ----------------------------------
     if not sts_df.empty:
         sts_counts_1 = sts_df.groupby("MMSI1").size()
         sts_counts_2 = sts_df.groupby("MMSI2").size()
@@ -176,7 +155,7 @@ def detect_sts_events(df, distance_km=0.5):
 
 import pandas as pd
 
-def loitering_analysis(df, quantile=0.1, min_speed_floor=0.5):
+def loitering_analysis(df, quantile=0.001, min_speed_floor=0.5):
     """
     Analyse vessel loitering behaviour using vessel-specific speed distributions.
 
