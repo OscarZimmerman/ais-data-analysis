@@ -8,18 +8,9 @@ import os
 import folium
 
 
-def normalise(series):
 
-    series = series.fillna(0)
-
-    min_val = series.min()
-    max_val = series.max()
-
-    if max_val - min_val == 0:
-        return pd.Series(0.0, index=series.index)
-
-    return (series - min_val) / (max_val - min_val)
-
+def percentile_rank(series):
+    return series.rank(pct=True)
 
 
 def ais_gap_analysis(df):
@@ -72,7 +63,7 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 
-def detect_sts_events(df, distance_km=0.5):
+def detect_sts_events(df, distance_km=0.3):
     print("Starting STS detection")
 
     df = df.copy()
@@ -153,71 +144,7 @@ def detect_sts_events(df, distance_km=0.5):
     return sts_df, sts_counts
 
 
-import pandas as pd
 
-def loitering_analysis(df, quantile=0.001, min_speed_floor=0.5):
-    """
-    Analyse vessel loitering behaviour using vessel-specific speed distributions.
-
-    Parameters:
-    ----------------------------------
-    df : pandas.DataFrame
-        Must contain columns: MMSI, SOG, time_delta (optional)
-    quantile : float
-        Lower quantile used to define loitering (e.g. 0.1 = bottom 10%)
-    min_speed_floor : float
-        Minimum threshold to avoid zero-speed bias
-
-    Returns:
-    ----------------------------------
-    result_df : DataFrame with:
-        - loiter_count
-        - total_count
-        - loiter_ratio
-        - loiter_duration
-    """
-
-    df = df.copy()
-
-   
-    thresholds = (
-        df.groupby("MMSI")["SOG"]
-        .quantile(quantile)
-        .rename("loiter_threshold")
-    )
-
-    df = df.merge(thresholds, on="MMSI")
-
-    # Apply minimum floor (important!)
-    df["loiter_threshold"] = df["loiter_threshold"].clip(lower=min_speed_floor)
-
- 
-    df["loiter_flag"] = df["SOG"] < df["loiter_threshold"]
-
-
-    loiter_count = df[df["loiter_flag"]].groupby("MMSI").size()
-    total_count = df.groupby("MMSI").size()
-
-    loiter_ratio = (loiter_count / total_count).fillna(0)
-
-
-    if "time_delta" in df.columns:
-        loiter_duration = (
-            df[df["loiter_flag"]]
-            .groupby("MMSI")["time_delta"]
-            .sum()
-        )
-    else:
-        loiter_duration = pd.Series(0, index=total_count.index)
-
-    result_df = pd.DataFrame({
-        "loiter_count": loiter_count,
-        "total_count": total_count,
-        "loiter_ratio": loiter_ratio,
-        "loiter_duration": loiter_duration
-    }).fillna(0)
-
-    return result_df
 
 
 def route_irregularity_analysis(df):
@@ -330,111 +257,54 @@ def name_change_analysis(df):
 import numpy as np
 import pandas as pd
 
-def compute_vessel_risk(
-    df,
-    gap_summary,
-    normalise,
-    row_num=None,
-    weights=None,
-    verbose=True
-):
-    """
-    Compute vessel risk scores using multiple behavioural indicators.
-
-    Requires:
-    - loitering_analysis()
-    - route_irregularity_analysis()
-    - name_change_analysis()
-    - sts_detection()
-
-    Parameters
-    ----------------------------------
-    df : DataFrame
-    gap_summary : DataFrame with 'gap_count'
-    normalise : function for scaling
-    row_num : optional (for saving file)
-    weights : dict (optional custom weights)
-
-    Returns
-    ----------------------------------
-    indicators : DataFrame with all scores + Risk_Score
-    """
-
-    if verbose:
-        print("Running vessel risk pipeline...")
+def compute_vessel_risk(df, gap_summary):
 
     vessels = df["MMSI"].unique()
     indicators = pd.DataFrame(index=vessels)
 
+    # --- RAW FEATURES ---
 
-    # 1. AIS Gaps
-
+    # AIS gaps
     indicators["AIS_Gap_Count"] = gap_summary["gap_count"]
 
-    # 2. Loitering
-
-    loiter_df = loitering_analysis(df)
-    indicators["Loiter_Ratio"] = loiter_df["loiter_ratio"]
 
 
-    # 3. Route irregularity
+    # Route irregularity
+    indicators["Route_Irregularity"] = route_irregularity_analysis(df)
 
-    route_irregularity = route_irregularity_analysis(df)
-    indicators["Route_Irregularity"] = route_irregularity
-
-
-    # 4. STS events
-
-    sts_df, sts_counts = detect_sts_events(df)
+    # STS
+    _, sts_counts = detect_sts_events(df)
     indicators["STS_Count"] = sts_counts
 
-
-    # 5. Name changes
-
+    # Name changes
     _, name_change_counts, _ = name_change_analysis(df)
     indicators["Name_Change_Count"] = name_change_counts
 
     indicators = indicators.fillna(0)
 
+    # --- PERCENTILE SCORES ---
+    indicators["gap_score"] = percentile_rank(indicators["AIS_Gap_Count"])
+    indicators["route_score"] = percentile_rank(indicators["Route_Irregularity"])
+    indicators["sts_score"] = percentile_rank(indicators["STS_Count"])
+    indicators["name_score"] = percentile_rank(indicators["Name_Change_Count"])
 
-    indicators["gap_score"] = normalise(indicators["AIS_Gap_Count"])
-    indicators["loiter_score"] = normalise(indicators["Loiter_Ratio"])
-    indicators["route_score"] = normalise(indicators["Route_Irregularity"])
+    # --- FLAGS (interpretability!) ---
+    indicators["flag_gap"] = indicators["gap_score"] > 0.8
+    indicators["flag_route"] = indicators["route_score"] > 0.8
+    indicators["flag_sts"] = indicators["sts_score"] > 0.8
+    indicators["flag_name"] = indicators["name_score"] > 0.8
 
-    indicators["sts_score"] = normalise(np.log1p(indicators["STS_Count"]))
-    indicators["name_change_score"] = normalise(indicators["Name_Change_Count"])
+    # --- FINAL RISK SCORE ---
+    flag_cols = [
+        "flag_gap",
+        "flag_route",
+        "flag_sts",
+        "flag_name"
+    ]
 
-
-    if weights is None:
-        weights = {
-            "gap": 0.25,
-            "loiter": 0.20,
-            "route": 0.15,
-            "sts": 0.25,
-            "name": 0.15
-        }
-
-
-    indicators["Risk_Score"] = (
-        weights["gap"] * indicators["gap_score"] +
-        weights["loiter"] * indicators["loiter_score"] +
-        weights["route"] * indicators["route_score"] +
-        weights["sts"] * indicators["sts_score"] +
-        weights["name"] * indicators["name_change_score"]
-    )
-
- 
-    # OUTPUT
- 
-    if verbose:
-        print("\nRisk score summary:")
-        print(indicators["Risk_Score"].describe())
-
-    if row_num is not None:
-        indicators.to_csv(f"../data/processed/vessel_risk_indicators{row_num}.csv")
+    indicators["Risk_Score"] = indicators[flag_cols].sum(axis=1)
 
     return indicators
-
 
 def risk_category(score):
     if score < 0.3:
@@ -457,7 +327,6 @@ def run_anomaly_detection(indicators, contamination=0.05):
 
     feature_cols = [
         "gap_score",
-        "loiter_score",
         "route_score",
         "sts_score",
         "name_change_score"
