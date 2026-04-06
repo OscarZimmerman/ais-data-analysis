@@ -14,6 +14,7 @@ def percentile_rank(series):
 
 
 def ais_gap_analysis(df):
+    df = df.copy()
     df['time_delta'] = df.groupby('MMSI')['BaseDateTime'].diff().dt.total_seconds()/60  # Time delta in minutes
 
     df['minor_gap_flag'] = (df['time_delta'] > 10 ) & (df['time_delta'] <= 30)
@@ -26,11 +27,13 @@ def ais_gap_analysis(df):
         dark_gaps=('dark_gap_flag','sum'),
         avg_gap=('time_delta','mean')
     )
+    
 
+    # Weighted gap count: minor=1, major=2, dark=4 
     gap_summary['gap_count'] = (
-        gap_summary['minor_gaps'] +
-        gap_summary['major_gaps'] +
-        gap_summary['dark_gaps']
+        gap_summary['minor_gaps'] * 1 +
+        gap_summary['major_gaps'] * 2 +
+        gap_summary['dark_gaps'] * 4
     )
 
     return gap_summary
@@ -38,7 +41,6 @@ def ais_gap_analysis(df):
 
 
 
-
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371  # Earth radius in km
     phi1 = np.radians(lat1)
@@ -50,17 +52,6 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 
-
-
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371  # Earth radius in km
-    phi1 = np.radians(lat1)
-    phi2 = np.radians(lat2)
-    dphi = np.radians(lat2 - lat1)
-    dlambda = np.radians(lon2 - lon1)
-
-    a = np.sin(dphi/2)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda/2)**2
-    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 
 def detect_sts_events(df, distance_km=0.3):
@@ -78,29 +69,29 @@ def detect_sts_events(df, distance_km=0.3):
     print("Candidate AIS points:", len(sts_candidates))
 
 
-    sts_candidates["time_bin"] = sts_candidates["timestamp"].dt.floor("30min")
+    sts_candidates["time_bin"] = sts_candidates["timestamp"].dt.floor("30min") # Time binning (30 minutes)
 
 
-    GRID_SIZE = 0.05
+    GRID_SIZE = 0.05 # ~5km grid cells at the equator
     sts_candidates["lat_bin"] = (sts_candidates["LAT"] / GRID_SIZE).astype(int)
     sts_candidates["lon_bin"] = (sts_candidates["LON"] / GRID_SIZE).astype(int)
 
 
-    groups = sts_candidates.groupby(["time_bin", "lat_bin", "lon_bin"])
+    groups = sts_candidates.groupby(["time_bin", "lat_bin", "lon_bin"]) # Group by time and spatial bins
 
     print("Total space-time groups:", len(groups))
 
-    events = []
+    events = [] # List to store candidate STS events
 
     for i, ((time_bin, lat_bin, lon_bin), subset) in enumerate(groups):
 
         if i % 500 == 0:
             print(f"Processing group {i}/{len(groups)}")
 
-        if subset["MMSI"].nunique() < 2:
+        if subset["MMSI"].nunique() < 2: # Need at least 2 vessels to have an encounter
             continue
 
-        coords = subset[["LAT", "LON"]].values
+        coords = subset[["LAT", "LON"]].values 
         mmsi = subset["MMSI"].values
 
         n = len(subset)
@@ -108,16 +99,15 @@ def detect_sts_events(df, distance_km=0.3):
         for a in range(n):
             for b in range(a + 1, n):
 
-                if mmsi[a] == mmsi[b]:
+                if mmsi[a] == mmsi[b]: # Skip same vessel
                     continue
 
-                # Use your haversine function here
-                dist = haversine(
+                dist = haversine(            # Calculate distance between the two points
                     coords[a][0], coords[a][1],
                     coords[b][0], coords[b][1]
                 )
 
-                if dist < distance_km:
+                if dist < distance_km: # If within distance threshold, record as candidate STS event
                     events.append({
                         "MMSI1": mmsi[a],
                         "MMSI2": mmsi[b],
@@ -129,10 +119,10 @@ def detect_sts_events(df, distance_km=0.3):
 
     sts_df = pd.DataFrame(events)
 
-    if not sts_df.empty:
-        sts_counts_1 = sts_df.groupby("MMSI1").size()
+    if not sts_df.empty: # Count STS events per vessel
+        sts_counts_1 = sts_df.groupby("MMSI1").size() 
         sts_counts_2 = sts_df.groupby("MMSI2").size()
-        sts_counts = sts_counts_1.add(sts_counts_2, fill_value=0)
+        sts_counts = sts_counts_1.add(sts_counts_2, fill_value=0) # Sum counts from both sides of the encounter
         sts_counts = sts_counts.rename("STS_Count")
         sts_counts = sts_counts.reindex(df["MMSI"].unique()).fillna(0)
     else:
@@ -213,8 +203,8 @@ def name_change_analysis(df):
         MMSIs with more than one unique vessel name
     """
 
-    df = df.copy()
-
+    df = df.copy() # Avoid modifying original DataFrame
+ 
 
     df["VesselName"] = df["VesselName"].astype(str)
     df["BaseDateTime"] = pd.to_datetime(df["BaseDateTime"])
@@ -252,58 +242,63 @@ def name_change_analysis(df):
     return name_change_events, name_change_counts, multi_name_vessels
 
 
+def compute_vessel_risk(df, gap_summary, weights=None):
 
+    if weights is None:
+        weights = {
+            "gap": 0.35,
+            "route": 0.2,
+            "sts": 0.3,
+            "name": 0.15
+        }
 
-import numpy as np
-import pandas as pd
+    assert abs(sum(weights.values()) - 1.0) < 1e-6, "Weights must sum to 1"
 
-def compute_vessel_risk(df, gap_summary):
+    vessels = df["MMSI"].unique() # Get unique vessels from the original DataFrame to ensure we include all vessels, even those without gaps or name changes
+    indicators = pd.DataFrame(index=vessels) # Start with all vessels as index
 
-    vessels = df["MMSI"].unique()
-    indicators = pd.DataFrame(index=vessels)
-
-    # --- RAW FEATURES ---
+   
 
     # AIS gaps
     indicators["AIS_Gap_Count"] = gap_summary["gap_count"]
-
-
 
     # Route irregularity
     indicators["Route_Irregularity"] = route_irregularity_analysis(df)
 
     # STS
-    _, sts_counts = detect_sts_events(df)
+    _, sts_counts = detect_sts_events(df) 
     indicators["STS_Count"] = sts_counts
 
     # Name changes
     _, name_change_counts, _ = name_change_analysis(df)
     indicators["Name_Change_Count"] = name_change_counts
 
-    indicators = indicators.fillna(0)
+    indicators = indicators.fillna(0) # Fill NaNs with 0 for vessels that had no gaps, no name changes, etc.
 
-    # --- PERCENTILE SCORES ---
-    indicators["gap_score"] = percentile_rank(indicators["AIS_Gap_Count"])
+
+    indicators["gap_score"]   = percentile_rank(indicators["AIS_Gap_Count"])
     indicators["route_score"] = percentile_rank(indicators["Route_Irregularity"])
-    indicators["sts_score"] = percentile_rank(indicators["STS_Count"])
-    indicators["name_score"] = percentile_rank(indicators["Name_Change_Count"])
+    indicators["sts_score"]   = percentile_rank(indicators["STS_Count"])
+    indicators["name_score"]  = percentile_rank(indicators["Name_Change_Count"])
 
-    # --- FLAGS (interpretability!) ---
-    indicators["flag_gap"] = indicators["gap_score"] > 0.8
+
+    indicators["Risk_Score"] = (
+        weights["gap"]   * indicators["gap_score"] +
+        weights["sts"]   * indicators["sts_score"] +
+        weights["route"] * indicators["route_score"] +
+        weights["name"]  * indicators["name_score"]
+    )
+ 
+
+    indicators["flag_gap"]   = indicators["gap_score"]   > 0.8
     indicators["flag_route"] = indicators["route_score"] > 0.8
-    indicators["flag_sts"] = indicators["sts_score"] > 0.8
-    indicators["flag_name"] = indicators["name_score"] > 0.8
-
-    # --- FINAL RISK SCORE ---
-    flag_cols = [
-        "flag_gap",
-        "flag_route",
-        "flag_sts",
-        "flag_name"
-    ]
-
-    indicators["Risk_Score"] = indicators[flag_cols].sum(axis=1)
-
+    indicators["flag_sts"]   = indicators["sts_score"]   > 0.8
+    indicators["flag_name"]  = indicators["name_score"]  > 0.8
+ 
+    # Number of indicators flagged (useful for explainability)
+    flag_cols = ["flag_gap", "flag_route", "flag_sts", "flag_name"]
+    indicators["Flag_Count"] = indicators[flag_cols].sum(axis=1)
+ 
     return indicators
 
 def risk_category(score):
@@ -329,7 +324,7 @@ def run_anomaly_detection(indicators, contamination=0.05):
         "gap_score",
         "route_score",
         "sts_score",
-        "name_change_score"
+        "name_score"
     ]
 
     X = indicators[feature_cols]
