@@ -138,20 +138,7 @@ def detect_sts_events(df, distance_km=0.3):
 
 
 def route_irregularity_analysis(df):
-    """
-    Calculate route irregularity based on distance variability between AIS points.
-
-    Parameters:
-    ----------------------------------
-    df : pandas.DataFrame
-        Must contain columns: MMSI, LAT, LON
-
-    Returns:
-    ----------------------------------
-    route_irregularity : pandas.Series
-        Standard deviation of step distances per vessel
-    """
-
+   
     df = df.copy()
 
 
@@ -185,23 +172,7 @@ def route_irregularity_analysis(df):
 
 
 def name_change_analysis(df):
-    """
-    Detect vessel name changes per MMSI.
-
-    Parameters:
-    ----------------------------------
-    df : pandas.DataFrame
-        Must contain: MMSI, VesselName, BaseDateTime
-
-    Returns:
-    ----------------------------------
-    name_change_events : DataFrame
-        Rows where a vessel name change occurred
-    name_change_counts : Series
-        Number of name changes per MMSI
-    multi_name_vessels : Series
-        MMSIs with more than one unique vessel name
-    """
+    
 
     df = df.copy() # Avoid modifying original DataFrame
  
