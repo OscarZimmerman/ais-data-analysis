@@ -9,18 +9,21 @@ import folium
 
 
 
-def percentile_rank(series):
+def percentile_rank(series): # Compute percentile rank of a pandas Series
     return series.rank(pct=True)
 
 
-def ais_gap_analysis(df):
-    df = df.copy()
+def ais_gap_analysis(df): # Analyze AIS data gaps for each vessel
+    df = df.copy() # Avoid modifying original DataFrame
     df['time_delta'] = df.groupby('MMSI')['BaseDateTime'].diff().dt.total_seconds()/60  # Time delta in minutes
 
+
+    # Classifying gaps, minor (10-30 min), major (30-180 min), dark (>180 min) (arbitrary)
     df['minor_gap_flag'] = (df['time_delta'] > 10 ) & (df['time_delta'] <= 30)
     df['major_gap_flag'] = (df['time_delta'] > 30 ) & (df['time_delta'] <= 180)
     df['dark_gap_flag'] = (df['time_delta'] > 180 ) 
 
+    # Summarize gaps per vessel
     gap_summary = df.groupby('MMSI').agg(
         minor_gaps=('minor_gap_flag','sum'),
         major_gaps=('major_gap_flag','sum'),
@@ -29,7 +32,7 @@ def ais_gap_analysis(df):
     )
     
 
-    # Weighted gap count: minor=1, major=2, dark=4 
+    # Weighted gap count, minor=1, major=2, dark=4 
     gap_summary['gap_count'] = (
         gap_summary['minor_gaps'] * 1 +
         gap_summary['major_gaps'] * 2 +
@@ -41,7 +44,7 @@ def ais_gap_analysis(df):
 
 
 
-def haversine(lat1, lon1, lat2, lon2):
+def haversine(lat1, lon1, lat2, lon2): # Calculate Haversine distance between two coordinate points in kilometers
     R = 6371  # Earth radius in km
     phi1 = np.radians(lat1)
     phi2 = np.radians(lat2)
@@ -54,7 +57,7 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 
-def detect_sts_events(df, distance_km=0.3):
+def detect_sts_events(df, distance_km=0.3): # Detect STS events based on low-speed proximity spacially and temporally
     print("Starting STS detection")
 
     df = df.copy()
@@ -64,7 +67,7 @@ def detect_sts_events(df, distance_km=0.3):
     print("Unique vessels:", df["MMSI"].nunique())
 
     print("\nFiltering low-speed AIS points (SOG < 2 knots)")
-    sts_candidates = df[df["SOG"] < 2].copy()
+    sts_candidates = df[df["SOG"] < 2].copy() # Focus on low-speed points which are more likely to indicate STS encounters
 
     print("Candidate AIS points:", len(sts_candidates))
 
@@ -83,6 +86,8 @@ def detect_sts_events(df, distance_km=0.3):
 
     events = [] # List to store candidate STS events
 
+
+    # Iterate through each group and check for vessel pairs within distance threshold
     for i, ((time_bin, lat_bin, lon_bin), subset) in enumerate(groups):
 
         if i % 500 == 0:
@@ -117,6 +122,7 @@ def detect_sts_events(df, distance_km=0.3):
     print("\nSTS scanning complete")
     print("Total candidate encounters:", len(events))
 
+    
     sts_df = pd.DataFrame(events)
 
     if not sts_df.empty: # Count STS events per vessel
@@ -137,7 +143,7 @@ def detect_sts_events(df, distance_km=0.3):
 
 
 
-def route_irregularity_analysis(df):
+def route_irregularity_analysis(df): # Analyze route irregularity by calculating the standard deviation of distances between consecutive AIS points for each vessel
    
     df = df.copy()
 
@@ -171,7 +177,7 @@ def route_irregularity_analysis(df):
 
 
 
-def name_change_analysis(df):
+def name_change_analysis(df): # Analyze vessel name changes by counting unique names per MMSI and detecting name change events
     
 
     df = df.copy() # Avoid modifying original DataFrame
@@ -181,13 +187,11 @@ def name_change_analysis(df):
     df["BaseDateTime"] = pd.to_datetime(df["BaseDateTime"])
 
     # Count unique names per MMSI
-  
     name_counts = df.groupby("MMSI")["VesselName"].nunique()
     multi_name_vessels = name_counts[name_counts > 1]
 
 
     # Detect name change events
-
     df = df.sort_values(["MMSI", "BaseDateTime"])
 
     df["previous_name"] = df.groupby("MMSI")["VesselName"].shift()
@@ -197,6 +201,7 @@ def name_change_analysis(df):
     # Remove first occurrence (NaN comparison issue)
     df.loc[df["previous_name"].isna(), "name_change_flag"] = False
 
+    # Extract name change events
     name_change_events = df[df["name_change_flag"]][
         ["MMSI", "BaseDateTime", "previous_name", "VesselName"]
     ]
@@ -213,9 +218,9 @@ def name_change_analysis(df):
     return name_change_events, name_change_counts, multi_name_vessels
 
 
-def compute_vessel_risk(df, gap_summary, weights=None):
+def compute_vessel_risk(df, gap_summary, weights=None): # Overall risk scoring function
 
-    if weights is None:
+    if weights is None: # arbitrary weights for each indicator, can be tuned based on domain knowledge or validation
         weights = {
             "gap": 0.35,
             "route": 0.2,
@@ -223,6 +228,7 @@ def compute_vessel_risk(df, gap_summary, weights=None):
             "name": 0.15
         }
 
+    # Ensure weights sum to 1
     assert abs(sum(weights.values()) - 1.0) < 1e-6, "Weights must sum to 1"
 
     vessels = df["MMSI"].unique() # Get unique vessels from the original DataFrame to ensure we include all vessels, even those without gaps or name changes
@@ -284,12 +290,10 @@ def risk_category(score):
     
 
 
-from sklearn.ensemble import IsolationForest
+from sklearn.ensemble import IsolationForest # Anomaly detection model to identify vessels with unusual patterns based on the computed indicators
 
-def run_anomaly_detection(indicators, contamination=0.05):
-    """
-    Apply Isolation Forest to detect anomalous vessels
-    """
+def run_anomaly_detection(indicators, contamination=0.05): # Run Isolation Forest to detect anomalous vessels based on the computed indicators
+   
 
     feature_cols = [
         "gap_score",

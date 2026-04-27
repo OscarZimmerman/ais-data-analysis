@@ -28,14 +28,18 @@ from functions import (
 
 
 
-def monte_carlo_risk(indicators, n_sim=500):
+def monte_carlo_risk(indicators, n_sim=500): # Perform Monte Carlo sensitivity analysis by randomly sampling weights for each risk indicator and computing the resulting risk scores to assess stability of vessel rankings under weight uncertainty
 
+    
     base_features = ["gap_score", "route_score", "sts_score", "name_score"]
     results = []
+    
+    # Randomly sample weights from a Dirichlet distribution to ensure they sum to 1, then compute risk scores for each simulation
     for _ in range(n_sim):
         w = np.random.dirichlet(np.ones(len(base_features)))
         risk = sum(w[i] * indicators[base_features[i]] for i in range(len(base_features)))
         results.append(risk)
+    # Aggregate results into a matrix and compute mean and std dev of risk scores across simulations for each vessel to identify those with unstable risk assessments
     mc_matrix = np.vstack(results)
     indicators = indicators.copy()
     indicators["mc_mean"] = mc_matrix.mean(axis=0)
@@ -44,10 +48,10 @@ def monte_carlo_risk(indicators, n_sim=500):
 
 
 
-# Pipeline steps
+# Pipeline steps # 
 
 
-def load_and_preprocess(filepath: str, max_rows: int | None = None) -> pd.DataFrame:
+def load_and_preprocess(filepath: str, max_rows: int | None = None) -> pd.DataFrame: # Load AIS data from CSV, perform cleaning (deduplication, coordinate validation, speed filtering), and prepare for analysis by ensuring proper datetime format and sorting by vessel and time
     
     print(f"\n[1/7] Loading data from {filepath} …")
     df = pd.read_csv(filepath, nrows=max_rows)
@@ -55,8 +59,10 @@ def load_and_preprocess(filepath: str, max_rows: int | None = None) -> pd.DataFr
     df["BaseDateTime"] = pd.to_datetime(df["BaseDateTime"])
     df = df.drop_duplicates(subset=["MMSI", "BaseDateTime"])
     df = df[(df["LAT"].between(-90, 90)) & (df["LON"].between(-180, 180))]
+    # Remove records with invalid coordinates (0,0) which often indicate missing or erroneous data
     df = df[~((df["LAT"] == 0) & (df["LON"] == 0))]
 
+    # Filter out records with implausible speeds (e.g., >50 knots) which may indicate data errors or unrealistic vessel behavior
     if "SOG" in df.columns:
         df = df[df["SOG"] <= 50]
 
@@ -74,6 +80,7 @@ def run_gap_analysis(df: pd.DataFrame, output_dir: str) -> pd.DataFrame:
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
+    # Focus on vessels with gaps for the histogram to better visualize the distribution of gap counts among those with at least one gap, while the bar chart highlights the severity breakdown for the top 20 vessels with the highest weighted gap counts
     has_gaps = gap_summary[gap_summary["gap_count"] > 0]
     sns.histplot(has_gaps["gap_count"], bins=30, ax=axes[0], color="#1565C0")
     axes[0].set_title("Distribution of weighted AIS gap count")
@@ -99,7 +106,8 @@ def run_gap_analysis(df: pd.DataFrame, output_dir: str) -> pd.DataFrame:
     return gap_summary
 
 
-def run_risk_scoring(df: pd.DataFrame, gap_summary: pd.DataFrame) -> pd.DataFrame:
+def run_risk_scoring(df: pd.DataFrame, gap_summary: pd.DataFrame) -> pd.DataFrame: # Compute risk score for each vessel
+
 
     print("\n[3/7] Computing risk scores …")
     ping_counts = df.groupby("MMSI").size().rename("ping_count")
@@ -132,6 +140,7 @@ def plot_risk_distribution(indicators: pd.DataFrame, output_dir: str) -> None:
     print("\n[5/7] Plotting risk distributions …")
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
+    # KDE plot to visualize the overall distribution of risk scores across vessels, highlighting the density of scores and identifying common risk levels
     sns.kdeplot(indicators["Risk_Score"], fill=True, color="#1565C0", ax=axes[0])
     axes[0].set_title("Risk score distribution (KDE)")
     axes[0].set_xlabel("Risk score (0–1)")
@@ -193,8 +202,7 @@ def plot_network(df: pd.DataFrame, indicators: pd.DataFrame, sts_df: pd.DataFram
     plt.close()
 
 
-def plot_radar(indicators: pd.DataFrame, output_dir: str) -> None:
-
+def plot_radar(indicators: pd.DataFrame, output_dir: str) -> None: # Create radar charts for the top 5 vessels to visualize their profiles across the different risk indicators
     features = ["gap_score", "route_score", "sts_score", "name_score"]
     feature_labels = ["AIS gaps", "Route", "STS", "Name changes"]
     N = len(features)
@@ -300,7 +308,7 @@ def print_intelligence_summary(df: pd.DataFrame, indicators: pd.DataFrame) -> No
     print("\n" + "=" * 60)
 
 
-# Entry point
+# Entry point # 
 
 
 def parse_args() -> argparse.Namespace:
